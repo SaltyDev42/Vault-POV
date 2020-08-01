@@ -22,6 +22,6 @@ output "Instructions" {
 # Run the command below to SSH into your server. You can also use PuTTY or any
 # other SSH client. Your SSH key is already loaded for you.
 
-ssh ubuntu@${aws_route53_record.jumphost.name}
+ssh ${var.user}@${aws_route53_record.jumphost.name}
 EOF
 }

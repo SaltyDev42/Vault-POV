@@ -30,8 +30,8 @@ variable "vm_size" {
 }
 
 variable "awsami" {
-  description = "AWS AMI Ubuntu 18.04 LTS"
-  default = "ami-0cf777d3cf97a1518"
+  description = "AWS AMI CentOS 8.2"
+  default = "ami-05786aa5add3ca7c8"
 }
 
 variable "create" {
@@ -85,4 +85,18 @@ variable "hostedzoneid" {
 variable "nvault_instance" {
   type        = number
   description = "Number of Vault instance wanted"
+}
+
+variable "user" {
+  type         = string
+  description  = "remote user on all host"
+  default      = "centos"
+}
+
+variable "certbot_email" {
+  description  = "email for certbot"
+}
+
+variable "dnstype" {
+  description  = "dns type for acme challenge"
 }

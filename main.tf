@@ -52,6 +52,7 @@ resource "aws_route_table_association" "main-public-1-a" {
 
 resource "aws_security_group" "pov-sg" {
   name        = "${var.prefix}-sg"
+  
   description = "Vault Security Group"
   vpc_id      = aws_vpc.pov.id
 
@@ -63,10 +64,17 @@ resource "aws_security_group" "pov-sg" {
   }
 
   ingress {
+    from_port   = 8200
+    to_port     = 8200
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    self = true
+    self        = true
   }
 
   egress {
@@ -96,7 +104,7 @@ resource "aws_instance" "vault" {
   instance_type = var.vm_size
   subnet_id     = aws_subnet.subnet.id
   vpc_security_group_ids = [aws_security_group.pov-sg.id]
-  associate_public_ip_address = "true"
+
   key_name = aws_key_pair.serverkey.key_name
 
   tags = {
@@ -137,31 +145,53 @@ resource "aws_route53_record" "vault_private" {
   ttl     = "300"
   records = [aws_instance.vault[count.index].private_ip]
 }
-resource "aws_route53_record" "vault_pub" {
-  count   = var.nvault_instance
-  zone_id = var.hostedzoneid
-  name    = "vault${count.index}.${var.base_fqdn}"
-  type    = "A"
-  ttl     = "300"
-  records = [aws_instance.vault[count.index].public_ip]
-}
 
-resource "aws_elb" "elb_vault" {
-  name      = "${var.prefix}-elb"
-  instances = aws_instance.vault[*].id
+resource "aws_lb" "vault-lb" {
+  name      = "${var.prefix}-lb"
   subnets   = [aws_subnet.subnet.id]
-
+  load_balancer_type = "network"
+  ip_address_type = "ipv4"
   tags = {
-    Name = "${var.prefix}-vaultelb"
+    Name = "${var.prefix}-lb"
     TTL = "720"
     owner = "${var.prefix}"
   }
+}
 
-  listener {
-    instance_port      = 8200
-    instance_protocol  = "TCP"
-    lb_port            = 443
-    lb_protocol        = "TCP"
+resource "aws_lb_target_group" "vault-lbtg" {
+  name      = "${var.prefix}-lbtg"
+  port      = 8200
+  protocol  = "TCP"
+  vpc_id    = aws_vpc.pov.id
+  target_type = "instance"
+
+  stickiness {
+    type = "lb_cookie"
+    enabled = false
+  }
+
+  health_check {
+    path = "/ui"
+    port = 8200
+    protocol = "HTTPS"
+  }
+}
+
+resource "aws_lb_target_group_attachment" "vault-lbtga" {
+  count            = var.nvault_instance
+  target_group_arn = aws_lb_target_group.vault-lbtg.arn
+  target_id        = aws_instance.vault[count.index].id
+  port             = 8200
+}
+
+resource "aws_lb_listener" "vault-lbl" {
+  load_balancer_arn = aws_lb.vault-lb.arn
+  port              = "443"
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.vault-lbtg.arn
   }
 }
 
@@ -171,8 +201,8 @@ resource "aws_route53_record" "vault" {
   type      = "A"
 
   alias {
-    name                   = aws_elb.elb_vault.dns_name
-    zone_id                = aws_elb.elb_vault.zone_id
+    name                   = aws_lb.vault-lb.dns_name
+    zone_id                = aws_lb.vault-lb.zone_id
     evaluate_target_health = true
   }
 }
@@ -211,6 +241,11 @@ resource "aws_instance" "jumphost" {
     host = self.public_ip
   }
 
+  provisioner "file" {
+    source      = "ansible_playbook/.ssh"
+    destination = "/home/${var.user}"
+  }
+
   provisioner "remote-exec" {
     inline = [
       "sudo hostnamectl set-hostname jumphost.ec2.internal",
@@ -218,16 +253,18 @@ resource "aws_instance" "jumphost" {
       "sudo yum install epel-release centos-release-ansible-29 -y",
       "sudo yum install python3 unzip ansible ansible certbot git python3-certbot-dns-route53 -y",
 
-      "sudo yum install emacs-nox bind-utils nmap",
+      "sudo yum install emacs-nox bind-utils nmap -y",
       # "sudo certbot certonly -n -m ${var.certbot_email} -d '*.${var.base_fqdn}' --dns-${var.dnstype} --agree-tos",
-      
+
       # ubuntu equivalent
       # "sudo apt-add-repository ppa:ansible/ansible -y",
       # "sudo apt-get update",
       # "sudo apt-get install ansible -y",
       # "sudo apt install unzip",
       # "sudo apt install python-pip -y",
-
+      "curl -LO https://releases.hashicorp.com/vault/${var.vault_vers}+ent/vault_${var.vault_vers}+ent_linux_amd64.zip",
+      "unzip vault_${var.vault_vers}+ent_linux_amd64.zip",
+      "sudo cp vault /usr/local/bin",
       "pip install netaddr",
       "chmod 400 ~/.ssh/id_rsa",
       "mkdir -vp ~/ansible/roles",
@@ -236,15 +273,13 @@ resource "aws_instance" "jumphost" {
   }
  
   provisioner "file" {
-    source      = "ansible_playbook/.ssh"
-    destination = "/home/${var.user}"
-  }
-  provisioner "file" {
     source      = "ansible_playbook/files"
     destination = "/home/${var.user}/ansible/files"
   }
   provisioner "file" {
-    source      = "ansible_playbook/site.yml"
+    content     = templatefile("ansible_playbook/site.yml.tpl", {
+      vault_version = var.vault_vers
+    })
     destination = "/home/${var.user}/ansible/site.yml"
   }
   provisioner "file" {
@@ -259,6 +294,16 @@ resource "aws_instance" "jumphost" {
       user = var.user,
     })
     destination = "/home/${var.user}/ansible/ansible.cfg"
+  }
+
+  provisioner "file" {
+    content     = templatefile("deploy.sh.tpl", {
+      base_fqdn        = var.base_fqdn
+      key_share        = var.key_share
+      key_threshold    = var.threshold
+      nvault_instances = var.nvault_instance
+    })
+    destination = "/home/${var.user}/deploy.sh"
   }
 
   ## This must be put last

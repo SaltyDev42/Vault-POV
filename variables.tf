@@ -100,3 +100,18 @@ variable "certbot_email" {
 variable "dnstype" {
   description  = "dns type for acme challenge"
 }
+
+variable "vault_vers" {
+  description = "vault version to deplou"
+  default = "1.5.0"
+}
+
+variable "key_share" {
+  description = "Number of key share"
+  default     = 1
+}
+
+variable "threshold" {
+  description = "Threshold of key share to unseal"
+  default     = 1
+}

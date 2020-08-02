@@ -12,9 +12,9 @@
   roles:
    - { role: ansible-vault } # It will install vault on the vms.
   vars:
-   vault_iface: "{{ansible_interfaces[1]}}"
+   vault_iface: "{{ansible_default_ipv4.interface}}"
    vault_install_remotely: true
-   vault_version: 1.5.0
+   vault_version: "${vault_version}"
    vault_api_addr: "https://{{inventory_hostname}}:8200"
    vault_pkg: "vault_{{vault_version}}+ent_linux_amd64.zip"
    vault_checksum_file_url: "https://releases.hashicorp.com/vault/{{vault_version}}+ent/vault_{{vault_version}}+ent_SHA256SUMS"

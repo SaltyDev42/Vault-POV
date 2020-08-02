@@ -57,9 +57,40 @@ resource "aws_route_table_association" "main-public-1-a" {
   route_table_id = aws_route_table.main-public.id
 }
 
+resource "aws_lb" "vault-lb" {
+  name      = "${var.prefix}-lb"
+  subnets   = [aws_subnet.subnet.id]
+  load_balancer_type = "network"
+  ip_address_type = "ipv4"
+  tags = {
+    Name = "${var.prefix}-lb"
+    TTL = "720"
+    owner = "${var.prefix}"
+  }
+}
+
+data "aws_network_interface" "vault-ni" {
+  filter {
+    name = "description"
+    values = ["ELB net/${aws_lb.vault-lb.name}/*"]
+  }
+  filter {
+    name = "vpc-id"
+    values = ["${aws_vpc.pov.id}"]
+  }
+  filter {
+    name = "status"
+    values = ["in-use"]
+  }
+  filter {
+    name = "attachment.status"
+    values = ["attached"]
+  }
+}
+
 resource "aws_security_group" "pov-sg" {
   name        = "${var.prefix}-sg"
-  
+
   description = "Vault Security Group"
   vpc_id      = aws_vpc.pov.id
 
@@ -74,7 +105,7 @@ resource "aws_security_group" "pov-sg" {
     from_port   = 8200
     to_port     = 8200
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["${data.aws_network_interface.vault-ni.private_ip}/32"]
   }
 
   ingress {
@@ -105,25 +136,13 @@ resource "aws_key_pair" "serverkey" {
   public_key = tls_private_key.serverkey.public_key_openssh
 }
 
-resource "aws_lb" "vault-lb" {
-  name      = "${var.prefix}-lb"
-  subnets   = [aws_subnet.subnet.id]
-  load_balancer_type = "network"
-  ip_address_type = "ipv4"
-  tags = {
-    Name = "${var.prefix}-lb"
-    TTL = "720"
-    owner = "${var.prefix}"
-  }
-}
-
 ## Target Group ressources will be added later
 resource "aws_lb_target_group" "vault-lbtg" {
   name      = "${var.prefix}-lbtg"
   port      = 8200
   protocol  = "TCP"
   vpc_id    = aws_vpc.pov.id
-  target_type = "instance"
+  target_type = "ip"
 
   stickiness {
     type = "lb_cookie"
@@ -343,7 +362,7 @@ resource "aws_route53_record" "vault_private" {
 resource "aws_lb_target_group_attachment" "vault-lbtga" {
   count            = var.nvault_instance
   target_group_arn = aws_lb_target_group.vault-lbtg.arn
-  target_id        = aws_instance.vault[count.index].id
+  target_id        = aws_instance.vault[count.index].private_ip
   port             = 8200
 }
 

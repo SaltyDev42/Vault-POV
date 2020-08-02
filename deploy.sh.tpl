@@ -17,11 +17,15 @@ TOKEN=$(grep Unseal <<< $OUTPUT | awk '{print $4}')
 ROOT=$(grep Initial <<< $OUTPUT | awk '{print $4}')
 
 ## Unseal vault
-VAULT_ADDR=$LEADER_VAULT vault operator unseal $TOKEN
+VAULT_ADDR=$LEADER_VAULT vault operator unseal $TOKEN 1>/dev/null
 
-for i in `seq 0 $((${nvault_instances}-1))`; do
-    echo VAULT_ADDR=https://vault$i-private.${base_fqdn}:8200 vault operator raft join $LEADER_VAULT
-    echo VAULT_ADDR=https://vault$i-private.${base_fqdn}:8200 vault operator unseal $TOKEN
+## ??? This number is arbitrary so it autojoins the cluster, do not touch
+## It doesn't work otherwise, and throws error 500
+sleep 10
+
+for i in `seq 1 $((${nvault_instances}-1))`; do
+    VAULT_ADDR=https://vault$i-private.${base_fqdn}:8200 vault operator raft join $LEADER_VAULT 1>/dev/null
+    VAULT_ADDR=https://vault$i-private.${base_fqdn}:8200 vault operator unseal    $TOKEN        1>/dev/null
 done
 
 echo UNSEAL TOKEN: $TOKEN

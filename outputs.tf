@@ -21,6 +21,7 @@ output "Instructions" {
 #
 # Run the command below to SSH into your server. You can also use PuTTY or any
 # other SSH client. Your SSH key is already loaded for you.
+# Run the script on the host
 
 ssh ${var.user}@${aws_route53_record.jumphost.name}
 EOF

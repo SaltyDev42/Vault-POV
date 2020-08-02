@@ -17,7 +17,6 @@ provider "aws" {
 
 resource "aws_vpc" "pov" {
   cidr_block       = var.address_space
-#  enable_dns_hostnames = "true"
   tags = {
     Name = "${var.prefix}-pov-vpc"
   }
@@ -34,20 +33,28 @@ resource "aws_subnet" "subnet" {
 }
 
 resource "aws_internet_gateway" "main-gw" {
-    vpc_id = aws_vpc.pov.id
+  vpc_id = aws_vpc.pov.id
+
+  tags = {
+    Name = "$(var.prefix)-vault-gw"
+  }
 }
 
 resource "aws_route_table" "main-public" {
-    vpc_id = aws_vpc.pov.id
-    route {
-        cidr_block = "0.0.0.0/0"
-        gateway_id = aws_internet_gateway.main-gw.id
-    }
+  vpc_id = aws_vpc.pov.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main-gw.id
+  }
+
+  tags = {
+    Name = "${var.prefix}-vault-NAT"
+  }
 }
 
 resource "aws_route_table_association" "main-public-1-a" {
-    subnet_id = aws_subnet.subnet.id
-    route_table_id = aws_route_table.main-public.id
+  subnet_id = aws_subnet.subnet.id
+  route_table_id = aws_route_table.main-public.id
 }
 
 resource "aws_security_group" "pov-sg" {
@@ -98,54 +105,6 @@ resource "aws_key_pair" "serverkey" {
   public_key = tls_private_key.serverkey.public_key_openssh
 }
 
-resource "aws_instance" "vault" {
-  count         = var.nvault_instance
-  ami           = var.awsami
-  instance_type = var.vm_size
-  subnet_id     = aws_subnet.subnet.id
-  vpc_security_group_ids = [aws_security_group.pov-sg.id]
-
-  key_name = aws_key_pair.serverkey.key_name
-
-  tags = {
-    Name = "${var.prefix}-vault${count.index}"
-    TTL = "720"
-    owner = "${var.prefix}"
-  }
-
-  connection {
-    type = "ssh"
-    user = var.user
-    private_key = tls_private_key.serverkey.private_key_pem
-    timeout = "3m"
-    host = self.public_ip
-  }
-  provisioner "remote-exec" {
-    inline = [
-      "sudo hostnamectl set-hostname vault${count.index}.ec2.internal",
-      "echo ${var.id_rsapub} >> /home/${var.user}/.ssh/authorized_keys",
-
-      # CENTOS
-      "sudo yum install unzip -y",
-      "sudo yum install dnsmasq -y",
-      
-      # ubuntu
-      # "sudo apt update",
-      # "sudo apt install unzip",
-      # "sudo apt install dnsmasq",
-    ]
-  }
-}
-
-resource "aws_route53_record" "vault_private" {
-  count   = var.nvault_instance
-  zone_id = var.hostedzoneid
-  name    = "vault${count.index}-private.${var.base_fqdn}"
-  type    = "A"
-  ttl     = "300"
-  records = [aws_instance.vault[count.index].private_ip]
-}
-
 resource "aws_lb" "vault-lb" {
   name      = "${var.prefix}-lb"
   subnets   = [aws_subnet.subnet.id]
@@ -158,6 +117,7 @@ resource "aws_lb" "vault-lb" {
   }
 }
 
+## Target Group ressources will be added later
 resource "aws_lb_target_group" "vault-lbtg" {
   name      = "${var.prefix}-lbtg"
   port      = 8200
@@ -177,24 +137,6 @@ resource "aws_lb_target_group" "vault-lbtg" {
   }
 }
 
-resource "aws_lb_target_group_attachment" "vault-lbtga" {
-  count            = var.nvault_instance
-  target_group_arn = aws_lb_target_group.vault-lbtg.arn
-  target_id        = aws_instance.vault[count.index].id
-  port             = 8200
-}
-
-resource "aws_lb_listener" "vault-lbl" {
-  load_balancer_arn = aws_lb.vault-lb.arn
-  port              = "443"
-  protocol          = "TCP"
-
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.vault-lbtg.arn
-  }
-}
-
 resource "aws_route53_record" "vault" {
   zone_id   = var.hostedzoneid
   name      = "vault.${var.base_fqdn}"
@@ -207,9 +149,23 @@ resource "aws_route53_record" "vault" {
   }
 }
 
+
+resource "aws_lb_listener" "vault-lbl" {
+  load_balancer_arn = aws_lb.vault-lb.arn
+  port              = "443"
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.vault-lbtg.arn
+  }
+}
+
+############BASTION###############
 ## Public keys to SSH on jumphost
 locals {
   sshpub = [
+    tls_private_key.serverkey.public_key_openssh,
     var.jba_key_pub,
     var.gdo_key_pub,
     var.jpa_key_pub,
@@ -285,7 +241,10 @@ resource "aws_instance" "jumphost" {
   provisioner "file" {
     content     = templatefile("ansible_playbook/hosts.tpl", {
       nvault_instance = var.nvault_instance,
-      vault_instances = aws_route53_record.vault_private
+      fqdns = [
+        for i in range(var.nvault_instance):
+        "vault${i}-private.${var.base_fqdn}"
+      ]
     })
     destination = "/home/${var.user}/ansible/hosts"
   }
@@ -324,12 +283,68 @@ resource "aws_route53_record" "jumphost" {
   records = [aws_instance.jumphost.public_ip]
 }
 
-resource "aws_route53_record" "jumphost_private" {
+############VAULT###################
+## Unreachable from external IPs
+
+resource "aws_instance" "vault" {
+  count         = var.nvault_instance
+  ami           = var.awsami
+  instance_type = var.vm_size
+  subnet_id     = aws_subnet.subnet.id
+  vpc_security_group_ids = [aws_security_group.pov-sg.id]
+  
+  key_name = aws_key_pair.serverkey.key_name
+
+  tags = {
+    Name = "${var.prefix}-vault${count.index}"
+    TTL = "720"
+    owner = "${var.prefix}"
+  }
+
+  connection {
+    type = "ssh"
+    user = var.user
+    private_key = tls_private_key.serverkey.private_key_pem
+    timeout = "3m"
+    host = self.private_ip
+
+    bastion_host = aws_instance.jumphost.public_ip
+    bastion_private_key = tls_private_key.serverkey.private_key_pem
+    bastion_user = var.user
+  }
+  provisioner "remote-exec" {
+    inline = [
+      "sudo hostnamectl set-hostname vault${count.index}.ec2.internal",
+      "echo ${var.id_rsapub} >> /home/${var.user}/.ssh/authorized_keys",
+    ]
+  }
+}
+
+resource "aws_eip" "vault-eip" {
+  count = var.nvault_instance
+#  vpc   = false
+
+  instance                  = aws_instance.vault[count.index].id
+#  associate_with_private_ip = aws_instance.vault[count.index].private_ip
+  tags = {
+    Name = "${var.prefix}${count.index}-eip"
+  }
+}
+
+resource "aws_route53_record" "vault_private" {
+  count   = var.nvault_instance
   zone_id = var.hostedzoneid
-  name    = "jumphost-private.${var.base_fqdn}"
+  name    = "vault${count.index}-private.${var.base_fqdn}"
   type    = "A"
   ttl     = "300"
-  records = [aws_instance.jumphost.private_ip]
+  records = [aws_instance.vault[count.index].private_ip]
+}
+
+resource "aws_lb_target_group_attachment" "vault-lbtga" {
+  count            = var.nvault_instance
+  target_group_arn = aws_lb_target_group.vault-lbtg.arn
+  target_id        = aws_instance.vault[count.index].id
+  port             = 8200
 }
 
 

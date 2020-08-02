@@ -8,6 +8,6 @@
 
 [vault_instances]
 %{ for n in range(nvault_instance) ~}
-${vault_instances[n].fqdn} vault_raft_node_id='vault-node${n}' vault_tls_cert_file='fullchain1.pem' vault_tls_key_file='privkey1.pem'
+${fqdns[n]} vault_raft_node_id='vault-node${n}' vault_tls_cert_file='fullchain1.pem' vault_tls_key_file='privkey1.pem'
 %{ endfor ~}
 

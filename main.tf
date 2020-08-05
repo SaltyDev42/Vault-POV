@@ -625,7 +625,7 @@ resource "aws_route53_record" "awx-private" {
 data "aws_ami" "rhel8" {
   owners = ["309956199498"]
   most_recent = true
-  name_regex = "RHEL-8.2.0_HVM-[0-9]*-x86_64*"
+  name_regex = "RHEL-8.2.0_HVM-[0-9]*-x86_64.*"
   filter {
     name = "architecture"
     values = ["x86_64"]
